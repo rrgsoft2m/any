@@ -1,178 +1,162 @@
-
-import { io } from 'socket.io-client';
-
-const STUN_SERVERS = {
-    iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' }
-    ]
-};
+import { Peer } from 'peerjs';
 
 export class WebRTCManager {
-    constructor(signalingUrl, onStatusChange, onRemoteStream, onMessage) {
-        this.socket = io(signalingUrl);
-        this.peerConnection = null;
-        this.dataChannel = null;
+    constructor(onStatusChange, onRemoteStream, onMessage) {
+        this.peer = null;
+        this.conn = null;
+        this.call = null;
         this.localStream = null;
+
         this.onStatusChange = onStatusChange || (() => { });
         this.onRemoteStream = onRemoteStream || (() => { });
         this.onMessage = onMessage || (() => { });
+
         this.role = null;
-        this.targetId = null;
-
-        this.setupSocketListeners();
-    }
-
-    setupSocketListeners() {
-        this.socket.on('connect', () => {
-            console.log('Connected to signaling server');
-            this.onStatusChange('CONNECTED_TO_SERVER');
-        });
-
-        this.socket.on('session-created', (id) => {
-            this.onStatusChange('SESSION_CREATED', id);
-        });
-
-        this.socket.on('session-joined', (id) => {
-            this.onStatusChange('SESSION_JOINED', id);
-        });
-
-        this.socket.on('client-ready', (clientId) => {
-            console.log("Client ready, initiating call to", clientId);
-            this.targetId = clientId;
-            this.startCall();
-        });
-
-        this.socket.on('offer', async ({ sender, payload }) => {
-            // If I am client, I receive offer from Host
-            if (this.role === 'client') {
-                this.targetId = sender; // Store host ID to reply
-                await this.handleOffer(payload);
-            }
-        });
-
-        this.socket.on('answer', async ({ sender, payload }) => {
-            await this.handleAnswer(payload);
-        });
-
-        this.socket.on('ice-candidate', async ({ sender, candidate }) => {
-            await this.handleCandidate(candidate);
-        });
-
-        this.socket.on('error', (msg) => {
-            console.error("Socket Error:", msg);
-            alert(msg);
-            this.onStatusChange('ERROR', msg);
-        });
     }
 
     // --- Host Functions ---
-    startHosting(id) {
+    async startHosting() {
         this.role = 'host';
-        this.socket.emit('create-session', id);
+        this.onStatusChange('Creating ID...');
+
+        // Create a new Peer with a random ID
+        this.peer = new Peer({
+            debug: 2
+        });
+
+        this.peer.on('open', (id) => {
+            console.log('My peer ID is: ' + id);
+            this.onStatusChange('SESSION_CREATED', id);
+        });
+
+        this.peer.on('connection', (conn) => {
+            console.log('Incoming connection from client');
+            this.handleDataConnection(conn);
+        });
+
+        this.peer.on('call', (call) => {
+            // Host usually sends stream, doesn't receive call, but good to handle
+            console.log("Host received call?");
+        });
+
+        this.peer.on('error', (err) => {
+            console.error(err);
+            this.onStatusChange('ERROR', err.type);
+        });
     }
 
-    async startCall() {
-        this.createPeerConnection();
-
+    async initiateCall(remotePeerId) {
+        // Host calls the client to share screen
         try {
-            // Capture Screen
             this.localStream = await navigator.mediaDevices.getDisplayMedia({
                 video: { cursor: "always" },
                 audio: false
             });
-            this.localStream.getTracks().forEach(track => {
-                this.peerConnection.addTrack(track, this.localStream);
+
+            const call = this.peer.call(remotePeerId, this.localStream);
+            this.call = call;
+
+            call.on('stream', (remoteStream) => {
+                // Host doesn't usually view client stream, but possible
             });
+
+            call.on('close', () => {
+                this.stopSharing();
+            });
+
+            // Allow user to stop sharing via browser UI
+            this.localStream.getVideoTracks()[0].onended = () => {
+                this.stopSharing();
+            };
+
         } catch (err) {
-            console.error("Error accessing display media:", err);
-            return;
+            console.error("Failed to get display media", err);
+            this.onStatusChange('ERROR', 'Screen share denied');
         }
+    }
 
-        // Create Data Channel
-        this.dataChannel = this.peerConnection.createDataChannel("control");
-        this.setupDataChannel(this.dataChannel);
-
-        const offer = await this.peerConnection.createOffer();
-        await this.peerConnection.setLocalDescription(offer);
-
-        this.socket.emit('offer', { target: this.targetId, payload: offer });
+    stopSharing() {
+        if (this.localStream) {
+            this.localStream.getTracks().forEach(track => track.stop());
+            this.localStream = null;
+        }
+        if (this.call) {
+            this.call.close();
+            this.call = null;
+        }
+        this.onStatusChange('SESSION_ENDED');
     }
 
     // --- Client Functions ---
-    joinSession(id) {
+    joinSession(hostId) {
         this.role = 'client';
-        this.socket.emit('join-session', id);
+        this.onStatusChange('Connecting...');
+
+        this.peer = new Peer({
+            debug: 2
+        });
+
+        this.peer.on('open', () => {
+            // Connect to host data channel
+            const conn = this.peer.connect(hostId);
+            this.handleDataConnection(conn);
+        });
+
+        // Wait for Host to call us with the stream
+        this.peer.on('call', (call) => {
+            console.log("Received call (screen share) from host");
+            call.answer(); // Answer without stream (receive only)
+
+            call.on('stream', (remoteStream) => {
+                console.log("Received remote stream");
+                this.onRemoteStream(remoteStream);
+                this.onStatusChange('SESSION_JOINED', hostId);
+            });
+        });
+
+        this.peer.on('error', (err) => {
+            console.error(err);
+            this.onStatusChange('ERROR', "Ulanishda xatolik: " + err.type);
+        });
     }
 
-    // --- Common WebRTC ---
-    createPeerConnection() {
-        if (this.peerConnection) return;
+    // --- Common ---
+    handleDataConnection(conn) {
+        this.conn = conn;
 
-        this.peerConnection = new RTCPeerConnection(STUN_SERVERS);
-
-        this.peerConnection.onicecandidate = (event) => {
-            if (event.candidate && this.targetId) {
-                this.socket.emit('ice-candidate', { target: this.targetId, candidate: event.candidate });
+        conn.on('open', () => {
+            console.log("Data connection open");
+            if (this.role === 'host') {
+                // If host, we are ready, maybe wait for explicit command or just start?
+                // Let's autosend the stream call to this peer
+                this.initiateCall(conn.peer);
             }
-        };
+        });
 
-        this.peerConnection.ontrack = (event) => {
-            if (event.streams && event.streams[0]) {
-                this.onRemoteStream(event.streams[0]);
+        conn.on('data', (data) => {
+            // Handle mouse/keyboard events
+            if (typeof data === 'object') {
+                this.onMessage(data);
             }
-        };
+        });
 
-        this.peerConnection.ondatachannel = (event) => {
-            this.setupDataChannel(event.channel);
-        };
-    }
+        conn.on('close', () => {
+            console.log("Connection closed");
+            this.onStatusChange('SESSION_ENDED');
+        });
 
-    setupDataChannel(channel) {
-        this.dataChannel = channel;
-        this.dataChannel.onopen = () => {
-            console.log("Data Channel Open");
-            // this.onStatusChange('DATA_CHANNEL_OPEN');
-        };
-        this.dataChannel.onmessage = (event) => {
-            try {
-                const msg = JSON.parse(event.data);
-                this.onMessage(msg);
-            } catch (e) { console.error("Invalid msg", event.data); }
-        };
-    }
-
-    async handleOffer(offer) {
-        this.createPeerConnection();
-        await this.peerConnection.setRemoteDescription(offer);
-
-        const answer = await this.peerConnection.createAnswer();
-        await this.peerConnection.setLocalDescription(answer);
-
-        this.socket.emit('answer', { target: this.targetId, payload: answer });
-    }
-
-    async handleAnswer(answer) {
-        if (this.peerConnection) {
-            await this.peerConnection.setRemoteDescription(answer);
-        }
-    }
-
-    async handleCandidate(candidate) {
-        if (this.peerConnection) {
-            try {
-                await this.peerConnection.addIceCandidate(candidate);
-            } catch (e) { console.error("Error adding candidate", e); }
-        }
+        conn.on('error', (err) => console.error("Conn error", err));
     }
 
     sendMessage(data) {
-        if (this.dataChannel && this.dataChannel.readyState === 'open') {
-            this.dataChannel.send(JSON.stringify(data));
+        if (this.conn && this.conn.open) {
+            this.conn.send(data);
         }
     }
 
     disconnect() {
-        if (this.peerConnection) this.peerConnection.close();
-        if (this.socket) this.socket.disconnect();
+        this.stopSharing();
+        if (this.conn) this.conn.close();
+        if (this.peer) this.peer.destroy();
     }
 }

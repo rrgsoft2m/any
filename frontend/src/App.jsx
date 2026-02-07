@@ -3,8 +3,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import { WebRTCManager } from './utils/WebRTCManager';
 import { Monitor, Smartphone, MousePointer2, Globe } from 'lucide-react';
 
-// Automatically detect the signaling server URL based on the current hostname
-const SIGNALING_URL = import.meta.env.VITE_API_URL || `${window.location.protocol}//${window.location.hostname}:5000`;
 
 const translations = {
   uz: {
@@ -16,7 +14,7 @@ const translations = {
     generateId: "ID Yaratish",
     connectDevice: "Qurilmaga Ulanish",
     connectDesc: "Masofaviy qurilmani boshqarish uchun 6 xonali ID kiriting.",
-    enterId: "6 xonali ID kiriting",
+    enterId: "ID kiriting",
     connect: "Ulanish",
     readyConnect: "Ulanishga Tayyor",
     yourId: "Sizning ID raqamingiz",
@@ -26,7 +24,7 @@ const translations = {
     sharingDesc: "Siz ekraningizni masofaviy qurilma bilan ulashmoqdasiz. Ularning kursor harakatlari ushbu sahifada ko'rinadi.",
     remoteUser: "Masofaviy Foydalanuvchi",
     controlling: "Boshqarilmoqda",
-    enterValidId: "Yaroqli 6 xonali ID kiriting",
+    enterValidId: "ID kiriting",
     footer: "RRG SOFT tomonidan ishlab chiqarilgan"
   },
   ru: {
@@ -37,8 +35,8 @@ const translations = {
     shareDesc: "Создайте уникальный ID, чтобы разрешить другому устройству управлять этим.",
     generateId: "Создать ID",
     connectDevice: "Подключиться",
-    connectDesc: "Введите 6-значный ID для управления удаленным устройством.",
-    enterId: "Введите 6-значный ID",
+    connectDesc: "Введите ID для управления удаленным устройством.",
+    enterId: "Введите ID",
     connect: "Подключить",
     readyConnect: "Готов к подключению",
     yourId: "Ваш ID",
@@ -48,7 +46,7 @@ const translations = {
     sharingDesc: "Вы делитесь экраном с удаленным устройством. Их курсор отображается на этой странице.",
     remoteUser: "Удаленный Пользователь",
     controlling: "Управление",
-    enterValidId: "Введите правильный 6-значный ID",
+    enterValidId: "Введите правильный ID",
     footer: "Разработано RRG SOFT"
   },
   en: {
@@ -59,8 +57,8 @@ const translations = {
     shareDesc: "Generate a unique ID to allow another device to control this one.",
     generateId: "Generate Session ID",
     connectDevice: "Connect to Device",
-    connectDesc: "Enter the 6-digit session ID to control a remote device.",
-    enterId: "Enter 6-digit ID",
+    connectDesc: "Enter the session ID to control a remote device.",
+    enterId: "Enter ID",
     connect: "Connect",
     readyConnect: "Ready to Connect",
     yourId: "Your Session ID",
@@ -70,7 +68,7 @@ const translations = {
     sharingDesc: "You are sharing your screen with a remote device. Their cursor movements are shown on this page.",
     remoteUser: "Remote User",
     controlling: "Controlling",
-    enterValidId: "Enter a valid 6-digit ID",
+    enterValidId: "Enter a valid ID",
     footer: "Produced by RRG SOFT"
   }
 };
@@ -92,18 +90,29 @@ function App() {
 
   useEffect(() => {
     // Initialize WebRTC Manager
+    // Note: No signaling URL needed for PeerJS implementation
     rtcRef.current = new WebRTCManager(
-      SIGNALING_URL,
       (status, data) => {
         console.log("RTC Status:", status, data);
         setStatus(status);
         if (status === 'SESSION_CREATED') {
-          // Host is ready
+          // Host is ready with ID
+          setSessionId(data);
           setStep('hosting');
         }
         if (status === 'SESSION_JOINED') {
-          // Client joined
+          // Client joined (or host received connection)
           setStep('session');
+        }
+        if (status === 'SESSION_ENDED') {
+          setStep('home');
+          setRole(null);
+          setRemoteStream(null);
+          setStatus("Disconnected");
+          alert("Ulanish uzildi");
+        }
+        if (status === "ERROR") {
+          alert("Xatolik: " + data);
         }
       },
       (stream) => {
@@ -138,18 +147,14 @@ function App() {
     }
   }, [remoteStream, step]);
 
-  const generateId = () => Math.floor(100000 + Math.random() * 900000).toString();
-
-  const startHosting = () => {
-    const id = generateId();
-    setSessionId(id);
+  const startHosting = async () => {
     setRole('host');
-    rtcRef.current.startHosting(id);
+    await rtcRef.current.startHosting();
   };
 
   const joinSession = () => {
     const id = sessionInputRef.current.value;
-    if (id.length === 6) {
+    if (id) {
       setSessionId(id);
       setRole('client');
       rtcRef.current.joinSession(id);
