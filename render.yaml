@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: vibe-backend
+    env: node
+    plan: free
+    buildCommand: cd backend && npm install
+    startCommand: cd backend && npm start
+    envVars:
+      - key: PORT
+        value: 10000

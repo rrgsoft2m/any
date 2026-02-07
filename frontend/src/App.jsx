@@ -4,7 +4,7 @@ import { WebRTCManager } from './utils/WebRTCManager';
 import { Monitor, Smartphone, MousePointer2, Globe } from 'lucide-react';
 
 // Automatically detect the signaling server URL based on the current hostname
-const SIGNALING_URL = `${window.location.protocol}//${window.location.hostname}:5000`;
+const SIGNALING_URL = import.meta.env.VITE_API_URL || `${window.location.protocol}//${window.location.hostname}:5000`;
 
 const translations = {
   uz: {
